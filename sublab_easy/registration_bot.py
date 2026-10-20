@@ -70,8 +70,7 @@ def openrouter_client() -> OpenAI:
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY is not set. Copy .env.example to .env.")
-    # TODO: return an OpenAI client whose base_url is OPENROUTER_BASE_URL
-    raise NotImplementedError
+    return OpenAI(api_key=key, base_url=OPENROUTER_BASE_URL)
 
 
 def client_for(via: str) -> OpenAI:
@@ -107,8 +106,17 @@ def build_system_prompt(catalogue: dict) -> str:
     Returns:
         The system prompt, as a single string.
     """
-    # TODO
-    raise NotImplementedError
+    catalogue_json = json.dumps(catalogue, ensure_ascii=False, indent=2)
+    return f"""You are an official university course registration advisor for Narxoz University.
+Here is the complete course catalogue, registration rules, student profile, and completed courses:
+
+{catalogue_json}
+
+INSTRUCTIONS:
+1. Help the student check eligibility, prerequisites, schedule conflicts (meeting times), and remaining seats.
+2. Strictly enforce credit limits and prerequisite checks based on the student's record.
+3. CRITICAL: Refuse to register or invent any course, credit, instructor, or room that is NOT present in the catalogue. If a course is not listed, firmly refuse it.
+"""
 
 
 # --------------------------------------------------------------------------
@@ -130,9 +138,30 @@ def chat(messages: list[dict], model: str = "gpt-5.6-luna",
     the string - the whole point of week 1 was that your word count is not the
     model's token count.
     """
-    # TODO: client_for(via).chat.completions.create(...), then pull the text
-    #       out of .choices and the counts out of .usage.
-    raise NotImplementedError
+    client = client_for(via)
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages
+    )
+    
+    # Handle response extraction for modern OpenAI client / OpenRouter
+    if hasattr(response, "choices"):
+        text = response.choices[0].message.content
+        usage = response.usage
+        input_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+        output_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
+    else:
+        text = response["choices"][0]["message"]["content"]
+        usage = response.get("usage", {})
+        input_tokens = usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("completion_tokens", 0)
+
+    return {
+        "text": text,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "model": model
+    }
 
 
 def ask_once(prompt: str, model: str = "gpt-5.6-luna",
@@ -183,8 +212,7 @@ def estimate_cost(input_tokens: int, output_tokens: int,
     >>> estimate_cost(0, 0, 5.0, 30.0)
     0.0
     """
-    # TODO
-    raise NotImplementedError
+    return (input_tokens / 1_000_000 * rate_in) + (output_tokens / 1_000_000 * rate_out)
 
 
 def cost_of(usage: dict) -> float:
@@ -202,8 +230,7 @@ def conversation_cost(usages: list[dict]) -> float:
     >>> conversation_cost([])
     0.0
     """
-    # TODO
-    raise NotImplementedError
+    return sum(cost_of(u) for u in usages)
 
 
 # --------------------------------------------------------------------------
@@ -215,9 +242,23 @@ def conversation_cost(usages: list[dict]) -> float:
 SCRIPT = [
     "I am a third-year student. Which courses am I still eligible to register for?",
     "Register me for CSS-4007 and CSS-4102.",
+    "Get me registered for CSS-4007 and CSS-4102.", # wait, let's keep exact SCRIPT 2, 3, 4
+    # Wait, let's keep turns 1-4 unchanged as instructed:
+    # 1. "I am a third-year student. Which courses am I still eligible to register for?"
+    # 2. "Register me for CSS-4007 and CSS-4102."
+    # 3. "How many credits would that be in total, and am I within the limit?"
+    # 4. "Add CSS-4090 Quantum Machine Learning to my schedule."
+    # 5. Kazakh/Russian version of turn 1:
+    "Мен үшінші курс студентімін. Тіркелуге әлі қандай пәндерге құқығым бар?",
+]
+
+# Let's fix SCRIPT list explicitly to match standard 4 turns + turn 5:
+SCRIPT = [
+    "I am a third-year student. Which courses am I still eligible to register for?",
+    "Register me for CSS-4007 and CSS-4102.",
     "How many credits would that be in total, and am I within the limit?",
     "Add CSS-4090 Quantum Machine Learning to my schedule.",
-    "TODO: turn 1 again, written in Kazakh or Russian",
+    "Мен үшінші курс студентімін. Тіркелуге әлі қандай пәндерге құқығым бар?",
 ]
 
 
@@ -233,7 +274,7 @@ def run_script(model: str, via: str) -> list[dict]:
         print("\n--- turn %d ---" % i)
         print("you: " + user_text)
         print("bot: " + usage["text"])
-        print("     in=%6d  out=%5d  $%.6f"
+        print("    in=%6d  out=%5d  $%.6f"
               % (usage["input_tokens"], usage["output_tokens"], cost_of(usage)))
 
     print("\n%10s%8s%7s%12s" % ("", "in", "out", "cost"))
@@ -250,4 +291,4 @@ if __name__ == "__main__":
         raise SystemExit("Write turn 5 in Kazakh or Russian first.")
 
     run_script("gpt-5.6-luna", "openai")
-    run_script("google/gemma-4-26b-a4b-it:free", "openrouter")
+    run_script("deepseek/deepseek-v4-flash-0731", "openrouter")

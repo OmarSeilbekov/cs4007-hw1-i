@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sublab_easy.registration_bot import (RATES_PER_MTOK,  # noqa: E402
-                                          ask_once, estimate_cost)
+                                        ask_once, estimate_cost)
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "kazakh_errors.json"
 
@@ -49,8 +49,18 @@ def build_prompt(corrupted: str) -> str:
     Asking for a fixed shape instead of prose is how you make six models
     comparable. Week 3 turns this into a topic.
     """
-    # TODO
-    raise NotImplementedError
+    return f"""You are an expert Kazakh language editor and linguist. 
+The following text is in Kazakh and may contain wrong letters, joined words, missing spaces, or characters from the wrong alphabet (e.g., mixed Cyrillic/Latin or incorrect specific Kazakh letters like ә, і, ң, ғ, ү, ұ, қ, ө, һ).
+
+Please correct the corrupted sentence and list the specific changes you made.
+
+Corrupted text: "{corrupted}"
+
+You must return ONLY a valid JSON object with exactly this structure and no additional markdown or commentary outside of it:
+{{
+  "corrected": "...",
+  "changes": ["...", "..."]
+}}"""
 
 
 def parse_response(text: str) -> dict:
@@ -60,8 +70,35 @@ def parse_response(text: str) -> dict:
     like. Be forgiving: find the JSON, parse it, and raise ValueError with the
     offending text if you truly cannot.
     """
-    # TODO
-    raise NotImplementedError
+    cleaned = text.strip()
+    # Remove markdown code blocks if present
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        # Remove first and last line if they are fences
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict) and "corrected" in data and "changes" in data:
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: try to find substring between first '{' and last '}'
+    try:
+        start = cleaned.index("{")
+        end = cleaned.rindex("}") + 1
+        data = json.loads(cleaned[start:end])
+        if isinstance(data, dict) and "corrected" in data and "changes" in data:
+            return data
+    except (ValueError, json.JSONDecodeError):
+        pass
+
+    raise ValueError(f"Could not parse JSON response from model:\n{text}")
 
 
 def correct_with(model: str, corrupted: str, via: str) -> dict:
@@ -75,8 +112,17 @@ def correct_with(model: str, corrupted: str, via: str) -> dict:
     `ask_once` from sublab_easy - there is no conversation here, just one
     prompt and one reply, eight times per model.
     """
-    # TODO
-    raise NotImplementedError
+    prompt = build_prompt(corrupted)
+    res = ask_once(prompt, model=model, via=via)
+    parsed = parse_response(res["text"])
+    
+    return {
+        "corrected": parsed["corrected"],
+        "changes": parsed["changes"],
+        "input_tokens": res["input_tokens"],
+        "output_tokens": res["output_tokens"],
+        "model": model
+    }
 
 
 def score_correction(returned: str, expected: str) -> dict:
@@ -90,18 +136,33 @@ def score_correction(returned: str, expected: str) -> dict:
     the original still counts as a correction. Your written analysis is where
     you make that call.
     """
-    # TODO
-    raise NotImplementedError
+    exact = (returned.strip() == expected.strip())
+    
+    # Calculate simple character difference (Levenshtein-like positional diff + length mismatch)
+    len_diff = abs(len(returned) - len(expected))
+    diff_chars = sum(1 for c1, c2 in zip(returned, expected) if c1 != c2)
+    char_diff = diff_chars + len_diff
+
+    return {
+        "exact": exact,
+        "char_diff": char_diff
+    }
 
 
 def run_all() -> list[dict]:
     """Every model against every sentence. One row per (model, sentence)."""
     rows = []
+    sentences = load_sentences()
+    
     for via, model in MODELS:
-        for s in load_sentences():
+        print(f"\n--- Running model: {model} ({via}) ---")
+        for i, s in enumerate(sentences, start=1):
+            print(f" Processing sentence {i}/{len(sentences)} (id: {s['id']})...", end="", flush=True)
             try:
                 r = correct_with(model, s["corrupted"], via)
+                print(" OK")
             except Exception as exc:            # a model failing IS a result
+                print(f" FAILED: {exc}")
                 rows.append({"model": model, "id": s["id"],
                              "errors": s["errors"], "failed": repr(exc)})
                 continue
